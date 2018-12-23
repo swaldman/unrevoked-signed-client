@@ -1,0 +1,10 @@
+*.class
+**/target/**
+.DS_Store
+tmp/*
+sbt-ethereum.log
+sbt-ethereum.log.*
+src/main/site-pipeline/public
+
+
+
