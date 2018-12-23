@@ -14,7 +14,11 @@ lazy val root = (project in file(".")).settings (
   Compile / createPlaintextProfile := { createProfile( "text/plain" )( Compile ).evaluated },
   Compile / createJsonProfile := { createProfile( "application/json" )( Compile ).evaluated },
   Compile / createJpegProfile := { createProfile( "image/jpeg" )( Compile ).evaluated },
-  Compile / createPngProfile := { createProfile( "image/png" )( Compile ).evaluated }
+  Compile / createPngProfile := { createProfile( "image/png" )( Compile ).evaluated },
+  Compile / storeSignPlaintextDocument := { storeSignDocument( "text/plain" )( Compile ).evaluated },
+  Compile / storeSignJsonDocument := { storeSignDocument( "application/json" )( Compile ).evaluated },
+  Compile / storeSignJpegDocument := { storeSignDocument( "image/jpeg" )( Compile ).evaluated },
+  Compile / storeSignPngDocument := { storeSignDocument( "image/png" )( Compile ).evaluated }
 )
 
 /*
@@ -75,7 +79,7 @@ def createProfile( contentType : String )( config : Configuration ) : Initialize
 
 def storeSignDocument( contentType : String )( config : Configuration ) : Initialize[InputTask[EthHash]] = {
   val parserGen = parserGeneratorForAddress( "<unrevoked-signed-contract-address>" ) { addressParser =>
-    addressParser ~ (token(Space.+) ~> token( NotSpace ).examples("<file-path-to-document>"))
+    addressParser.flatMap( addr => (token(Space.+) ~> token( NotSpace ).examples("<file-path-to-document>")).map( path => ( addr, path ) ) )
   }
   val parser = Defaults.loadForParser( config / xethFindCacheRichParserInfo )( parserGen )
 
@@ -83,7 +87,7 @@ def storeSignDocument( contentType : String )( config : Configuration ) : Initia
     val log = streams.value.log
     val store = dataStore.value
 
-    implicit val ( sctx, ssender ) = xethStubEnvironment.value
+    implicit val ( sctx, ssender ) = ( config / xethStubEnvironment ).value
 
     val (contractAddress, filePath) = parser.parsed
     val documentBytes = {
