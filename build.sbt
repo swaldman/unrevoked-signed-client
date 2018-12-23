@@ -18,7 +18,8 @@ lazy val root = (project in file(".")).settings (
   Compile / storeSignPlaintextDocument := { storeSignDocument( "text/plain" )( Compile ).evaluated },
   Compile / storeSignJsonDocument := { storeSignDocument( "application/json" )( Compile ).evaluated },
   Compile / storeSignJpegDocument := { storeSignDocument( "image/jpeg" )( Compile ).evaluated },
-  Compile / storeSignPngDocument := { storeSignDocument( "image/png" )( Compile ).evaluated }
+  Compile / storeSignPngDocument := { storeSignDocument( "image/png" )( Compile ).evaluated },
+  Compile / profileForSigner := { findProfileForSigner( Compile ).evaluated }
 )
 
 /*
@@ -50,6 +51,8 @@ val storeSignJsonDocument      = inputKey[EthHash]("Creates a document marked si
 val storeSignJpegDocument      = inputKey[EthHash]("Creates a document marked signed by the current sbt-ethereum sender from a given file path, as 'image/jpeg'" )
 val storeSignPngDocument       = inputKey[EthHash]("Creates a document marked signed by the current sbt-ethereum sender from a given file path, as 'image/png'" )
 
+val profileForSigner = inputKey[EthHash]("Finds the profile document for a given signer (Ethereum address).")
+
 def createProfile( contentType : String )( config : Configuration ) : Initialize[InputTask[EthHash]] = {
   val parserGen = parserGeneratorForAddress( "<unrevoked-signed-contract-address>" ) { addressParser =>
     addressParser.flatMap( addr => (token(Space.+) ~> token( NotSpace ).examples("<file-path-to-profile>")).map( path => ( addr, path ) ) )
@@ -72,7 +75,7 @@ def createProfile( contentType : String )( config : Configuration ) : Initialize
     val hash = store.put( contentType, profileBytes ).assert
     stub.transaction.createIdentityForSender( sol.Bytes32( hash.bytes ) )
 
-    log.warn( s"The document at path '${filePath}' has been stored, and defined as the profile for sender address '0x${ssender.address}' on contract at '0x${contractAddress}'." )
+    log.info( s"The document at path '${filePath}' has been stored, and defined as the profile for sender address '0x${ssender.address}' on contract at '0x${contractAddress}'." )
     hash
   }
 }
@@ -99,8 +102,39 @@ def storeSignDocument( contentType : String )( config : Configuration ) : Initia
     val hash = store.put( contentType, documentBytes ).assert
     stub.transaction.markSigned( sol.Bytes32( hash.bytes ) )
 
-    log.warn( s"The document at path '${filePath}' has been stored, and is marked signed for sender address '0x${ssender.address}' on contract at '0x${contractAddress}'." )
+    log.info( s"The document at path '${filePath}' has been stored, and is marked signed for sender address '0x${ssender.address}' on contract at '0x${contractAddress}'." )
     hash
+  }
+}
+
+def findProfileForSigner( config : Configuration ) : Initialize[InputTask[EthHash]] = {
+  val parserGen = parserGenerator { mbRpi =>
+    addressParser( "<unrevoked-signed-contract-address>", mbRpi ) ~ (Space.+ ~> addressParser( "<signer-address>", mbRpi ))
+  }
+  val parser = Defaults.loadForParser( config / xethFindCacheRichParserInfo )( parserGen )
+
+  Def.inputTask {
+    val log = streams.value.log
+    val store = dataStore.value
+
+    implicit val ( sctx, ssender ) = ( config / xethStubEnvironment ).value
+
+    val ( contractAddress, signerAddress ) = parser.parsed
+
+    val stub = new UnrevokedSigned( contractAddress )
+
+    val profileHash = EthHash.withBytes( stub.constant.profileHashForSigner( signerAddress ).widen )
+    val ( contentType, profileBytes ) = store.get( profileHash ).assert
+
+    println( s"Content-Type: ${contentType}" )
+    println()
+
+    contentType match {
+      case "text/plain" => println( new String( profileBytes.toArray, java.nio.charset.StandardCharsets.UTF_8 ) )
+      case _            => println( s"0x${profileBytes.hex}" )
+    }
+
+    profileHash
   }
 }
 
