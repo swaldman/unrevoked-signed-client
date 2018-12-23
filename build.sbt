@@ -11,16 +11,26 @@ lazy val root = (project in file(".")).settings (
   name := "unrevoked-signed-client",
   fileBasedDataStoreDataDir := baseDirectory.value / "data-store",
   dataStore := new DataStore.JsonFileBased( fileBasedDataStoreDataDir.value ),
-  libraryDependencies += "com.mchange" %% "unrevoked-signed" % "0.0.1-SNAPSHOT" changing()
+  Compile / createPlaintextProfile := { createProfile( "text/plain" )( Compile ).evaluated },
+  Compile / createJsonProfile := { createProfile( "application/json" )( Compile ).evaluated },
+  Compile / createJpegProfile := { createProfile( "image/jpeg" )( Compile ).evaluated },
+  Compile / createPngProfile := { createProfile( "image/png" )( Compile ).evaluated }
 )
 
 /*
  *  Custom keys and tasks below
  */ 
 
+import sbt.Def.Initialize
 import com.mchange.sc.v1.consuela._ // for toImmutableSeq, we have it in the build classpath via the sbt-ethereum plugin
-import com.mchange.sc.v1.consuela.ethereum.EthHash
+import com.mchange.sc.v1.consuela.ethereum.{EthAddress,EthHash}
+import com.mchange.sc.v1.consuela.ethereum.stub
+import com.mchange.sc.v1.consuela.ethereum.stub.sol
+import com.mchange.sc.v1.sbtethereum.lib._
+import com.mchange.sc.v1.sbtethereum.lib.Parsers._
 import sbt.complete.DefaultParsers._
+
+import com.mchange.sc.v1.unrevokedsigned.contract._
 
 val fileBasedDataStoreDataDir = settingKey[File]("Directory in which profile and document data/metadata should be stored.")
 
@@ -36,18 +46,58 @@ val storeSignJsonDocument      = inputKey[EthHash]("Creates a document marked si
 val storeSignJpegDocument      = inputKey[EthHash]("Creates a document marked signed by the current sbt-ethereum sender from a given file path, as 'image/jpeg'" )
 val storeSignPngDocument       = inputKey[EthHash]("Creates a document marked signed by the current sbt-ethereum sender from a given file path, as 'image/png'" )
 
-/*
+def createProfile( contentType : String )( config : Configuration ) : Initialize[InputTask[EthHash]] = {
+  val parserGen = parserGeneratorForAddress( "<unrevoked-signed-contract-address>" ) { addressParser =>
+    addressParser.flatMap( addr => (token(Space.+) ~> token( NotSpace ).examples("<file-path-to-profile>")).map( path => ( addr, path ) ) )
+  }
+  val parser = Defaults.loadForParser( config / xethFindCacheRichParserInfo )( parserGen )
 
-def createProfile( contentType : String ) : Initialize.InputTask[EthHash] = Def.inputTask {
-  val store = dataStore.value
+  Def.inputTask {
+    val log = streams.value.log
+    val store = dataStore.value
 
-  implicit val ( sctx, ssender ) = xethStubEnvironment.value
+    implicit val ( sctx, ssender ) = (config / xethStubEnvironment).value
 
-  val filePath = token( NotSpace ).examples("<file-path-to-profile>").parsed
-  val profileBytes = java.nio.file.Files.readAllBytesPaths.get(filePath).toImmutableSeq
-  val stub = UnrevokedSigned
+    val (contractAddress, filePath) = parser.parsed
+    val profileBytes = {
+      import java.nio.file._
+      Files.readAllBytes( Paths.get(filePath) ).toImmutableSeq
+    }
+    val stub = new UnrevokedSigned( contractAddress )
 
+    val hash = store.put( contentType, profileBytes ).assert
+    stub.transaction.createIdentityForSender( sol.Bytes32( hash.bytes ) )
 
+    log.warn( s"The document at path '${filePath}' has been stored, and defined as the profile for sender address '0x${ssender.address}' on contract at '0x${contractAddress}'." )
+    hash
+  }
 }
 
-*/ 
+def storeSignDocument( contentType : String )( config : Configuration ) : Initialize[InputTask[EthHash]] = {
+  val parserGen = parserGeneratorForAddress( "<unrevoked-signed-contract-address>" ) { addressParser =>
+    addressParser ~ (token(Space.+) ~> token( NotSpace ).examples("<file-path-to-document>"))
+  }
+  val parser = Defaults.loadForParser( config / xethFindCacheRichParserInfo )( parserGen )
+
+  Def.inputTask {
+    val log = streams.value.log
+    val store = dataStore.value
+
+    implicit val ( sctx, ssender ) = xethStubEnvironment.value
+
+    val (contractAddress, filePath) = parser.parsed
+    val documentBytes = {
+      import java.nio.file._
+      Files.readAllBytes( Paths.get(filePath) ).toImmutableSeq
+    }
+    val stub = new UnrevokedSigned( contractAddress )
+
+    val hash = store.put( contentType, documentBytes ).assert
+    stub.transaction.markSigned( sol.Bytes32( hash.bytes ) )
+
+    log.warn( s"The document at path '${filePath}' has been stored, and is marked signed for sender address '0x${ssender.address}' on contract at '0x${contractAddress}'." )
+    hash
+  }
+}
+
+
