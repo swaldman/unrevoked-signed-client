@@ -26,7 +26,7 @@ lazy val root = (project in file(".")).settings (
     }
   },
   ethcfgNodeChainId := 3,
-  unrevokedSignedContractAddress := "0x83beeb43ac63db9e4828fe6177f9024c94398f01",
+  unrevokedSignedContractAddress := "0xa240691bb281131ebca3caaffec4a504c66b5849",
   unrevokedSignedHttpServerInterface := "localhost",
   unrevokedSignedHttpServerPort := 8998,
   unrevokedSignedHttpClientBaseUrl := "http://unrevokedsigned.mchange.com/",

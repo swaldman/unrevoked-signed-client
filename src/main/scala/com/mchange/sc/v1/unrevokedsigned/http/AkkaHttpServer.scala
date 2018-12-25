@@ -22,7 +22,10 @@ import akka.http.scaladsl.server.directives.MethodDirectives.put
 import akka.http.scaladsl.server.directives.RouteDirectives.complete
 import akka.http.scaladsl.server.directives.PathDirectives.path
 
-import com.mchange.sc.v1.consuela.ethereum.EthHash
+import com.mchange.sc.v1.consuela.ethereum.{ stub, EthAddress, EthChainId, EthHash }
+import com.mchange.sc.v1.consuela.ethereum.stub.sol
+
+import com.mchange.sc.v1.unrevokedsigned.contract.UnrevokedSigned
 
 import scala.concurrent.duration._
 import akka.pattern.ask
@@ -35,7 +38,22 @@ object AkkaHttpServer {
 
   implicit lazy val timeout = Timeout(5.seconds)
 
-  val unrevokedSignedHttpActor : ActorRef = system.actorOf(UnrevokedSignedHttpActor.props, "unrevokedSignedHttpActor")
+  lazy val unrevokedSignedHttpActor : ActorRef = system.actorOf(UnrevokedSignedHttpActor.props, "unrevokedSignedHttpActor")
+
+  lazy val us : UnrevokedSigned = {
+    val contractAddress = ConfigProps.getProperty( "unrevokedsigned.eth.contractAddress" )
+
+    val nodeUrl = ConfigProps.getProperty( "unrevokedsigned.eth.nodeUrl" )
+    val chainId = ConfigProps.getProperty( "unrevokedsigned.eth.chainId" ).toInt
+
+    UnrevokedSigned.build(
+      jsonRpcUrl = nodeUrl,
+      contractAddress = EthAddress( contractAddress ),
+      chainId = Some( EthChainId( chainId ) )
+    )
+  }
+
+  implicit lazy val ssender = stub.Sender.Default
 
   lazy val routes : Route = concat(
     pathPrefix("data-store") {
@@ -95,14 +113,25 @@ object AkkaHttpServer {
     pathPrefix("find-signers") {
       path(Segment) { hex =>
         pathEnd {
-          complete( StatusCodes.NotImplemented )
+          val docHash = sol.Bytes32( hex.decodeHex )
+          val len = us.constant.countSigners( docHash ).widen.toInt
+          val tups = ( 0 until len ).map( i => us.constant.fetchSigner( docHash, sol.UInt256(i) ) )
+          val signersList = {
+            tups
+              .filter { case ( signerAddr, valid, profileHash ) => valid }
+              .map { case ( signerAddr, valid, profileHash ) => Signer( signerAddr.hex, profileHash.widen.hex ) }
+              .toList
+          }
+          complete( Signers( signersList ) )
         }
       }
     },
     pathPrefix("find-profile") {
       path(Segment) { hex =>
         pathEnd {
-          complete( StatusCodes.NotImplemented )
+          val signerAddr = EthAddress( hex )
+          val solHash = us.constant.profileHashForSigner( signerAddr )
+          complete( Profile( solHash.widen.hex ) )
         }
       }
     }
