@@ -1,7 +1,17 @@
 package com.mchange.sc.v1.unrevokedsigned.http
 
 import com.mchange.sc.v3.failable._
-import com.mchange.sc.v3.failable.log._
+import com.mchange.sc.v3.failable.logging._
+
+import com.mchange.sc.v1.consuela.ethereum.EthHash
+
+import com.mchange.sc.v1.unrevokedsigned.DataStore
+
+import com.mchange.sc.v1.log.MLevel._
+
+import java.io.File
+
+import scala.collection._
 
 import akka.actor.{ Actor, ActorLogging, Props }
 
@@ -18,18 +28,24 @@ object UnrevokedSignedHttpActor {
   sealed trait ContainsResponse
 
   final object GetResponse {
-    final case class Success( contentType : String, data : immutable.Seq[Byte] ) extends GetResponse
-    final case class Failed( message : String ) extends GetResponse
+    final case class  Success( contentType : String, data : immutable.Seq[Byte] ) extends GetResponse
+    final case object NotFound extends GetResponse
+    final case class  Failed( message : String ) extends GetResponse
   }
   sealed trait GetResponse
 
-  def props : Props = Props[UserRegistryActor]
+  def props : Props = Props[UnrevokedSignedHttpActor]
 }
-class UnrevokedSignedHttpActor( localDataStore : DataStore ) extends Actor with ActorLogging {
+class UnrevokedSignedHttpActor extends Actor with ActorLogging {
+  import UnrevokedSignedHttpActor._
+
+  val localDataStore : DataStore = new DataStore.JsonFileBased( new File( ConfigProps.getProperty("unrevokedsigned.data.store.json.data.dir") ) )
+
   private def findGetResponse( hash : EthHash ) : GetResponse = {
     localDataStore.get( hash ).xwarn( "Call to get in the local data store failed." ) match {
-      case Succeeded( Tuple2( contentType, data ) ) => GetResponse.Success( contentType, data )
-      case Failed( src )                            => GetResponse.Failed( src.toString )
+      case Succeeded( Some( Tuple2( contentType, data ) ) ) => GetResponse.Success( contentType, data )
+      case Succeeded( None )                                => GetResponse.NotFound
+      case Failed( src )                                    => GetResponse.Failed( src.toString )
     }
   }
   private def findContainsResponse( hash : EthHash ) : ContainsResponse = {

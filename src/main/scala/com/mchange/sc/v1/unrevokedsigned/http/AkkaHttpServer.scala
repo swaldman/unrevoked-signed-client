@@ -1,5 +1,11 @@
 package com.mchange.sc.v1.unrevokedsigned.http
 
+import com.mchange.sc.v1.consuela._
+
+import com.mchange.sc.v1.unrevokedsigned.DataStore
+
+import com.mchange.sc.v1.log.MLevel._
+
 import scala.concurrent.Await
 import scala.concurrent.duration.Duration
 
@@ -8,10 +14,26 @@ import akka.http.scaladsl.Http
 import akka.http.scaladsl.server.Route
 import akka.stream.ActorMaterializer
 
+import akka.http.scaladsl.server.Directives._
+import akka.http.scaladsl.model.{ContentType, HttpEntity, StatusCodes }
+import akka.http.scaladsl.server.Route
+import akka.http.scaladsl.server.directives.MethodDirectives.get
+import akka.http.scaladsl.server.directives.MethodDirectives.put
+import akka.http.scaladsl.server.directives.RouteDirectives.complete
+import akka.http.scaladsl.server.directives.PathDirectives.path
+
+import com.mchange.sc.v1.consuela.ethereum.EthHash
+
+import scala.concurrent.duration._
+import akka.pattern.ask
+import akka.util.Timeout
+
 object AkkaHttpServer {
 
   implicit val system       : ActorSystem       = ActorSystem("UnrevokedSignedAkkaHttp")
   implicit val materializer : ActorMaterializer = ActorMaterializer()
+
+  implicit lazy val timeout = Timeout(5.seconds)
 
   val unrevokedSignedHttpActor : ActorRef = system.actorOf(UnrevokedSignedHttpActor.props, "unrevokedSignedHttpActor")
 
@@ -20,12 +42,14 @@ object AkkaHttpServer {
       concat (
         pathPrefix("put") {
           pathEnd {
-            post {
+            put {
               entity(as[Array[Byte]]) { bytes =>
                 extractRequestContext { ctx =>
                   val contentType = ctx.request.entity.contentType.toString
-                  val fbool = (unrevokedSignedHttpActor ? UnrevokedSignedHttpActor.Put( contentType, bytes )).mapTo[Boolean]
-                  fbool.map( ok => complete( if (ok) StatusCodes.Created else StatusCodes.InternalServerError ) )
+                  val f_bool = (unrevokedSignedHttpActor ? UnrevokedSignedHttpActor.Put( contentType, bytes.toImmutableSeq )).mapTo[Boolean]
+                  onSuccess( f_bool ) { ok =>
+                    complete( if (ok) StatusCodes.Created else StatusCodes.InternalServerError )
+                  }
                 }
               }
             }
@@ -34,7 +58,8 @@ object AkkaHttpServer {
         pathPrefix("get") {
           path(Segment) { hex =>
             pathEnd {
-              (unrevokedSignedHttpActor ? UnrevokedSignedHttpActor.Get( EthHash( hex ) ) ).mapTo[UnrevokedSignedHttpActor.GetResponse].map {
+              val f_getResponse = (unrevokedSignedHttpActor ? UnrevokedSignedHttpActor.Get( EthHash.withBytes( hex.decodeHex ) ) ).mapTo[UnrevokedSignedHttpActor.GetResponse]
+              onSuccess( f_getResponse ) {
                 case UnrevokedSignedHttpActor.GetResponse.Success( contentType, data ) => {
                   ContentType.parse( contentType ) match {
                     case Right( ct ) => complete( HttpEntity( ct, data.toArray ) )
@@ -43,6 +68,9 @@ object AkkaHttpServer {
                       complete( StatusCodes.InternalServerError )
                     }
                   }
+                }
+                case UnrevokedSignedHttpActor.GetResponse.NotFound => {
+                  complete( StatusCodes.NotFound )
                 }
                 case UnrevokedSignedHttpActor.GetResponse.Failed( message ) => {
                   complete( StatusCodes.InternalServerError )
@@ -54,9 +82,10 @@ object AkkaHttpServer {
         pathPrefix("contains") {
           path(Segment) { hex =>
             pathEnd {
-              (unrevokedSignedHttpActor ? UnrevokedSignedHttpActor.Contains( EthHash( hex ) ) ).mapTo[UnrevokedSignedHttpActor.ContainsResponse].map {
-                case UnrevokedSignedHttpActor.ContainsResponse.Success( result )  => complete( if (found) StatusCodes.Ok else StatusCodes.NotFound )
-                case UnrevokedSignedHttpActor.ContainsResponse.Failure( message ) => complete( StatusCodes.InternalServerError )
+              val f_containsResponse = (unrevokedSignedHttpActor ? UnrevokedSignedHttpActor.Contains( EthHash.withBytes( hex.decodeHex ) ) ).mapTo[UnrevokedSignedHttpActor.ContainsResponse]
+              onSuccess( f_containsResponse ) {
+                case UnrevokedSignedHttpActor.ContainsResponse.Success( found )  => complete( if (found) StatusCodes.OK else StatusCodes.NotFound )
+                case UnrevokedSignedHttpActor.ContainsResponse.Failed( message ) => complete( StatusCodes.InternalServerError )
               }
             }
           }
@@ -80,14 +109,9 @@ object AkkaHttpServer {
   )
 
   def main( argv : Array[String] ) : Unit = {
-    val props = {
-      borrow( classOf[UnrevokedSignedHttpActor].getClassLoader().getResource("unrevokedsigned.properties").openStream() ) { is =>
-        java.util.Properties.load(is)
-      }
-    }
-    val port      = props.getProperty( "unrevokedsigned.http.server.port" ).toInt
-    val iface     = props.getProperty( "unrevokedsigned.http.server.interface" )
-    val clientUrl = props.getProperty( "unrevokedsigned.http.client.url" )
+    val port      = ConfigProps.getProperty( "unrevokedsigned.http.server.port" ).toInt
+    val iface     = ConfigProps.getProperty( "unrevokedsigned.http.server.interface" )
+    val clientUrl = ConfigProps.getProperty( "unrevokedsigned.http.client.url" )
 
     Http().bindAndHandle(routes, iface, port)
 
