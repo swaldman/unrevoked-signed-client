@@ -5,6 +5,7 @@ tmp/*
 sbt-ethereum.log
 sbt-ethereum.log.*
 src/main/site-pipeline/public
+data-store/*
 
 
 

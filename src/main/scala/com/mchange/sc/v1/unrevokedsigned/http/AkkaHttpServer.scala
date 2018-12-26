@@ -6,13 +6,17 @@ import com.mchange.sc.v1.unrevokedsigned.DataStore
 
 import com.mchange.sc.v1.log.MLevel._
 
+import scala.collection._
+
 import scala.concurrent.Await
-import scala.concurrent.duration.Duration
+import scala.concurrent.duration._
 
 import akka.actor.{ ActorRef, ActorSystem }
 import akka.http.scaladsl.Http
 import akka.http.scaladsl.server.Route
+
 import akka.stream.ActorMaterializer
+import akka.stream.scaladsl.Sink
 
 import akka.http.scaladsl.server.Directives._
 import akka.http.scaladsl.model.{ContentType, HttpEntity, StatusCodes }
@@ -27,9 +31,8 @@ import com.mchange.sc.v1.consuela.ethereum.stub.sol
 
 import com.mchange.sc.v1.unrevokedsigned.contract.UnrevokedSigned
 
-import scala.concurrent.duration._
 import akka.pattern.ask
-import akka.util.Timeout
+import akka.util.{ByteString,Timeout}
 
 object AkkaHttpServer {
 
@@ -40,18 +43,16 @@ object AkkaHttpServer {
 
   lazy val unrevokedSignedHttpActor : ActorRef = system.actorOf(UnrevokedSignedHttpActor.props, "unrevokedSignedHttpActor")
 
-  lazy val us : UnrevokedSigned = {
-    val contractAddress = ConfigProps.getProperty( "unrevokedsigned.eth.contractAddress" )
+  val contractAddress = EthAddress( ConfigProps.getProperty( "unrevokedsigned.eth.contractAddress" ) )
 
-    val nodeUrl = ConfigProps.getProperty( "unrevokedsigned.eth.nodeUrl" )
-    val chainId = ConfigProps.getProperty( "unrevokedsigned.eth.chainId" ).toInt
+  val nodeUrl = ConfigProps.getProperty( "unrevokedsigned.eth.nodeUrl" )
+  val chainId = ConfigProps.getProperty( "unrevokedsigned.eth.chainId" ).toInt
 
-    UnrevokedSigned.build(
-      jsonRpcUrl = nodeUrl,
-      contractAddress = EthAddress( contractAddress ),
-      chainId = Some( EthChainId( chainId ) )
-    )
-  }
+  lazy val us : UnrevokedSigned = UnrevokedSigned.build(
+    jsonRpcUrl = nodeUrl,
+    contractAddress = contractAddress,
+    chainId = Some( EthChainId( chainId ) )
+  )
 
   implicit lazy val ssender = stub.Sender.Default
 
@@ -111,20 +112,30 @@ object AkkaHttpServer {
       )
     },
     pathPrefix("find-signers") {
-      path(Segment) { hex =>
-        pathEnd {
-          val docHash = sol.Bytes32( hex.decodeHex )
-          val len = us.constant.countSigners( docHash ).widen.toInt
-          val tups = ( 0 until len ).map( i => us.constant.fetchSigner( docHash, sol.UInt256(i) ) )
-          val signersList = {
-            tups
-              .filter { case ( signerAddr, valid, profileHash ) => valid }
-              .map { case ( signerAddr, valid, profileHash ) => Signer( signerAddr.hex, profileHash.widen.hex ) }
-              .toList
+      concat (
+        get {
+          path(Segment) { hex =>
+            pathEnd {
+              complete( findSigners( hex.decodeHexAsSeq ) )
+            }
           }
-          complete( Signers( signersList ) )
+        },
+        post {
+          fileUpload("document") {
+            case (fileInfo, fileStream ) => {
+              val f_bytestring = fileStream.runWith( Sink.reduce( (a : ByteString, b : ByteString) => a ++ b ) )
+              onSuccess( f_bytestring ) { bytestring =>
+                complete( findSigners( EthHash.hash(bytestring.compact.toArray.toImmutableSeq).bytes ) )
+              }
+            }
+          }
+        },
+        put {
+          entity(as[Array[Byte]]) { bytes =>
+            complete( findSigners( EthHash.hash(bytes).bytes ) )
+          }
         }
-      }
+      )
     },
     pathPrefix("find-profile") {
       path(Segment) { hex =>
@@ -134,8 +145,29 @@ object AkkaHttpServer {
           complete( Profile( solHash.widen.hex ) )
         }
       }
+    },
+    pathPrefix("metadata") {
+      complete( Metadata( chainId, contractAddress.hex ) )
+    },
+    pathPrefix("assets") {
+      path( RemainingPath ) { path =>
+        getFromResource( s"assets/${path}" )
+      }
     }
   )
+
+  private def findSigners( bytes : immutable.Seq[Byte] ) = {
+    val docHash = sol.Bytes32( bytes )
+    val len = us.constant.countSigners( docHash ).widen.toInt
+    val tups = ( 0 until len ).map( i => us.constant.fetchSigner( docHash, sol.UInt256(i) ) )
+    val signersList = {
+      tups
+        .filter { case ( signerAddr, valid, profileHash ) => valid }
+        .map { case ( signerAddr, valid, profileHash ) => Signer( signerAddr.hex, profileHash.widen.hex ) }
+        .toList
+    }
+    Signers( signersList )
+  }
 
   def main( argv : Array[String] ) : Unit = {
     val port      = ConfigProps.getProperty( "unrevokedsigned.http.server.port" ).toInt

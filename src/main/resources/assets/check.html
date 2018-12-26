@@ -1,0 +1,100 @@
+<html>
+  <head><title>Check Document!</title></head>
+  <script>
+    var theChainId = -1;
+    
+    function clearSignersList() {
+      var signersList = document.getElementById( "signersList" )
+      while (signersList.firstChild) {
+        signersList.removeChild(signersList.firstChild);
+      }
+    }
+    function appendSigner( signersList, signer ) {
+      var li = document.createElement("li");
+      var span = document.createElement("span")
+      span.textContent = "0x" + signer.address;
+    
+      var aProfile = document.createElement("a");
+      aProfile.textContent = "profile";
+      aProfile.setAttribute( "href", "/data-store/get/" + signer.profileHash );
+
+      var aEtherscan = document.createElement("a");
+      aEtherscan.textContent = "etherscan";
+      aEtherscan.setAttribute( "href", baseUrlForChainId( theChainId ) + signer.address );
+
+      li.appendChild( span );
+      li.appendChild( document.createTextNode(" ") );
+      li.appendChild( aProfile );
+      li.appendChild( document.createTextNode(" ") );
+      li.appendChild( aEtherscan );
+
+      signersList.appendChild( li );
+    }
+    function appendSigners( signers ) {
+      var signersList = document.getElementById( "signersList" )
+      signers.forEach( function(s) { appendSigner( signersList, s ); } )
+    }
+    function updateResults( response ) {
+      appendSigners( response.signers )
+    }
+    function doUpload( file ) {
+      var req = new XMLHttpRequest();
+      req.open("PUT", "/find-signers");
+      req.setRequestHeader("Content-type", "application/binary");
+      req.onload = function( event ) { updateResults( JSON.parse( event.target.responseText ) ); }
+      req.send( file );
+    }
+    function handleChange() {
+      clearSignersList()
+      var fileInput = document.getElementById( "chooser" )
+      if ( fileInput.files.length > 0 ) {
+        doUpload( fileInput.files[0] )
+      }
+    }
+    function buildFooter( chainId, contractAddress ) {
+      var footer = document.getElementById( "footer" )
+      var b = document.createElement("b");
+      b.textContent = "Ethereum contract address (on chain with ID " + chainId + "): "
+      var a = document.createElement("a");
+      a.setAttribute( "href", baseUrlForChainId( chainId ) + contractAddress )
+      a.textContent = "0x" + contractAddress
+      footer.appendChild( b )
+      footer.appendChild( a )
+    }
+    function baseUrlForChainId( chainId ) {
+      if ( chainId == 1 ) {
+        return "http://etherscan.io/address/"
+      }
+      else if ( chainId == 3 ) {
+        return "http://ropsten.etherscan.io/address/"
+      }
+    }
+    function initPage() {
+      var req = new XMLHttpRequest();
+      req.open("GET", "/metadata");
+      req.onload = function( event ) {
+        var metadata = JSON.parse( event.target.responseText );
+        theChainId = metadata.chainId;
+        buildFooter( metadata.chainId, metadata.contractAddress );
+      }
+      req.send();
+      console.log("createFooter() request sent.");
+    }
+  </script>
+  <body onLoad="initPage()">
+    <h1>Check Document!</h1>
+    <div id="chooserPanel">
+      <label for="chooser">Choose a document to verify:</label>
+      <input type="file" id="chooser" name="document" onChange="handleChange()"/>
+    </div>
+    <hr />
+    <div id="resultsPanel">
+      <h3>Signers</h3>
+      <ul id="signersList">
+      </ul>
+    </div>
+    <hr>
+    <div id="footer">
+    </div>
+  </body>
+</html>
