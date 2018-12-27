@@ -28,7 +28,8 @@ package object http extends SprayJsonSupport {
   implicit val MetadataJsonFormat = jsonFormat2( Metadata )
 
   val ConfigProps = {
-    borrow( classOf[UnrevokedSignedHttpActor].getClassLoader().getResource("unrevokedsigned.properties").openStream() ) { is =>
+    // which class we choose here is arbitrary, we just want the ClassLoader loading this library
+    borrow( classOf[Signer].getClassLoader().getResource("unrevokedsigned.properties").openStream() ) { is =>
       val out = new java.util.Properties()
       out.load(is)
       out

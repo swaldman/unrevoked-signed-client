@@ -8,19 +8,21 @@ import com.mchange.sc.v1.log.MLevel._
 
 import scala.collection._
 
-import scala.concurrent.Await
+import scala.concurrent.{Await,Future}
 import scala.concurrent.duration._
+
+import java.io.File
 
 import akka.actor.{ ActorRef, ActorSystem }
 import akka.http.scaladsl.Http
 import akka.http.scaladsl.server.Route
 
 import akka.stream.ActorMaterializer
-import akka.stream.scaladsl.Sink
+import akka.stream.scaladsl.{Source,Sink}
 
 import akka.http.scaladsl.server.Directives._
-import akka.http.scaladsl.model.{ContentType, HttpEntity, StatusCodes }
-import akka.http.scaladsl.server.Route
+import akka.http.scaladsl.model.{ContentType, HttpEntity, HttpResponse, StatusCodes }
+import akka.http.scaladsl.server.{RequestContext, Route}
 import akka.http.scaladsl.server.directives.MethodDirectives.get
 import akka.http.scaladsl.server.directives.MethodDirectives.put
 import akka.http.scaladsl.server.directives.RouteDirectives.complete
@@ -31,6 +33,9 @@ import com.mchange.sc.v1.consuela.ethereum.stub.sol
 
 import com.mchange.sc.v1.unrevokedsigned.contract.UnrevokedSigned
 
+import com.mchange.sc.v3.failable._
+import com.mchange.sc.v3.failable.logging._
+
 import akka.pattern.ask
 import akka.util.{ByteString,Timeout}
 
@@ -39,14 +44,12 @@ object AkkaHttpServer {
   implicit val system       : ActorSystem       = ActorSystem("UnrevokedSignedAkkaHttp")
   implicit val materializer : ActorMaterializer = ActorMaterializer()
 
-  implicit lazy val timeout = Timeout(5.seconds)
+  lazy val contractAddress = EthAddress( ConfigProps.getProperty( "unrevokedsigned.eth.contractAddress" ) )
 
-  lazy val unrevokedSignedHttpActor : ActorRef = system.actorOf(UnrevokedSignedHttpActor.props, "unrevokedSignedHttpActor")
+  lazy val nodeUrl = ConfigProps.getProperty( "unrevokedsigned.eth.nodeUrl" )
+  lazy val chainId = ConfigProps.getProperty( "unrevokedsigned.eth.chainId" ).toInt
 
-  val contractAddress = EthAddress( ConfigProps.getProperty( "unrevokedsigned.eth.contractAddress" ) )
-
-  val nodeUrl = ConfigProps.getProperty( "unrevokedsigned.eth.nodeUrl" )
-  val chainId = ConfigProps.getProperty( "unrevokedsigned.eth.chainId" ).toInt
+  lazy val localDataStore : DataStore = new DataStore.JsonFileBased( new File( ConfigProps.getProperty("unrevokedsigned.data.store.json.data.dir") ) )
 
   lazy val us : UnrevokedSigned = UnrevokedSigned.build(
     jsonRpcUrl = nodeUrl,
@@ -56,105 +59,137 @@ object AkkaHttpServer {
 
   implicit lazy val ssender = stub.Sender.Default
 
-  lazy val routes : Route = concat(
-    pathPrefix("data-store") {
-      concat (
-        pathPrefix("put") {
-          pathEnd {
+  lazy val routes : Route = {
+    def ec( implicit ctx : RequestContext ) = ctx.executionContext
+
+    extractRequestContext { implicit ctx =>
+      concat(
+        pathPrefix("data-store") {
+          concat (
+            pathPrefix("put") {
+              pathEnd {
+                put {
+                  complete {
+                    val f_bytestring : Future[ByteString] = ctx.request.entity.dataBytes.runWith( Sink.reduce( _ ++ _ ) )
+                    f_bytestring.map { bytestring =>
+                      val data = bytestring.compact.toArray.toImmutableSeq
+                      val contentType = ctx.request.entity.contentType.toString
+                      val ok = localDataStore.put( contentType, data ).xwarn( "Attempt to store incoming data failed." ).isSucceeded
+                      if (ok) StatusCodes.Created else StatusCodes.InternalServerError
+                    }( ec )
+                  }
+                }
+              }
+            },
+            pathPrefix("get") {
+              path(Segment) { hex =>
+                pathEnd {
+                  complete {
+                    Future {
+                      localDataStore.get( EthHash.withBytes(hex.decodeHex ) ).xwarn( "Call to get in the local data store failed." ) match {
+                        case Succeeded( Some( Tuple2( contentType, data ) ) ) => {
+                          ContentType.parse( contentType ) match {
+                            case Right( ct ) => {
+                              HttpResponse( entity = HttpEntity( ct, data.toArray ) )
+                            }
+                            case Left( error ) => {
+                              WARNING.log( s"Couldn't parse content type! ${error}" )
+                              HttpResponse( status = StatusCodes.BadRequest )
+                            }
+                          }
+                        }
+                        case Succeeded( None ) => {
+                          HttpResponse( status = StatusCodes.NotFound )
+                        }
+                        case Failed( src ) => {
+                          HttpResponse( status = StatusCodes.InternalServerError )
+                        }
+                      }
+                    }( ec )
+                  }
+                }
+              }
+            },
+            pathPrefix("contains") {
+              path(Segment) { hex =>
+                pathEnd {
+                  complete {
+                    Future {
+                      localDataStore.contains( EthHash.withBytes( hex.decodeHex ) ).xwarn( "Checking whether a hash is contained in the local data store failed." ) match {
+                        case Succeeded( found ) => if (found) StatusCodes.OK else StatusCodes.NotFound
+                        case Failed( src )      => StatusCodes.InternalServerError
+                      }
+                    }( ec )
+                  }
+                }
+              }
+            }
+          )
+        },
+        pathPrefix("find-signers") {
+          concat (
+            get {
+              path(Segment) { hex =>
+                pathEnd {
+                  complete {
+                    Future {
+                      findSigners( hex.decodeHexAsSeq )
+                    }( ec )
+                  }
+                }
+              }
+            },
+            post {
+              fileUpload("document") {
+                case (fileInfo, fileStream ) => {
+                  complete {
+                    val f_bytestring : Future[ByteString] = fileStream.runWith( Sink.reduce( _ ++ _ ) )
+                    f_bytestring.map { bytestring =>
+                      findSigners( EthHash.hash(bytestring.compact.toArray.toImmutableSeq).bytes )
+                    }( ec )
+                  }
+                }
+              }
+            },
             put {
-              entity(as[Array[Byte]]) { bytes =>
-                extractRequestContext { ctx =>
-                  val contentType = ctx.request.entity.contentType.toString
-                  val f_bool = (unrevokedSignedHttpActor ? UnrevokedSignedHttpActor.Put( contentType, bytes.toImmutableSeq )).mapTo[Boolean]
-                  onSuccess( f_bool ) { ok =>
-                    complete( if (ok) StatusCodes.Created else StatusCodes.InternalServerError )
-                  }
-                }
+              complete {
+                val f_bytestring : Future[ByteString] = ctx.request.entity.dataBytes.runWith( Sink.reduce( _ ++ _ ) )
+                f_bytestring.map { bytestring =>
+                  val data = bytestring.compact.toArray.toImmutableSeq
+                  findSigners( EthHash.hash(data).bytes )
+                }( ec )
+              }
+            }
+          )
+        },
+        pathPrefix("find-profile") {
+          path(Segment) { hex =>
+            pathEnd {
+              complete {
+                Future {
+                  val signerAddr = EthAddress( hex )
+                  val solHash = us.constant.profileHashForSigner( signerAddr )
+                  Profile( solHash.widen.hex )
+                }( ec )
               }
             }
           }
         },
-        pathPrefix("get") {
-          path(Segment) { hex =>
-            pathEnd {
-              val f_getResponse = (unrevokedSignedHttpActor ? UnrevokedSignedHttpActor.Get( EthHash.withBytes( hex.decodeHex ) ) ).mapTo[UnrevokedSignedHttpActor.GetResponse]
-              onSuccess( f_getResponse ) {
-                case UnrevokedSignedHttpActor.GetResponse.Success( contentType, data ) => {
-                  ContentType.parse( contentType ) match {
-                    case Right( ct ) => complete( HttpEntity( ct, data.toArray ) )
-                    case Left( error ) => {
-                      WARNING.log( s"Couldn't parse content type! ${error}" )
-                      complete( StatusCodes.InternalServerError )
-                    }
-                  }
-                }
-                case UnrevokedSignedHttpActor.GetResponse.NotFound => {
-                  complete( StatusCodes.NotFound )
-                }
-                case UnrevokedSignedHttpActor.GetResponse.Failed( message ) => {
-                  complete( StatusCodes.InternalServerError )
-                }
-              }
-            }
+        pathPrefix("metadata") {
+          complete {
+            Future {
+              Metadata( chainId, contractAddress.hex )
+            }( ec )
           }
         },
-        pathPrefix("contains") {
-          path(Segment) { hex =>
-            pathEnd {
-              val f_containsResponse = (unrevokedSignedHttpActor ? UnrevokedSignedHttpActor.Contains( EthHash.withBytes( hex.decodeHex ) ) ).mapTo[UnrevokedSignedHttpActor.ContainsResponse]
-              onSuccess( f_containsResponse ) {
-                case UnrevokedSignedHttpActor.ContainsResponse.Success( found )  => complete( if (found) StatusCodes.OK else StatusCodes.NotFound )
-                case UnrevokedSignedHttpActor.ContainsResponse.Failed( message ) => complete( StatusCodes.InternalServerError )
-              }
-            }
+        pathPrefix("assets") {
+          path( RemainingPath ) { path =>
+            getFromResource( s"assets/${path}" )
           }
         }
       )
-    },
-    pathPrefix("find-signers") {
-      concat (
-        get {
-          path(Segment) { hex =>
-            pathEnd {
-              complete( findSigners( hex.decodeHexAsSeq ) )
-            }
-          }
-        },
-        post {
-          fileUpload("document") {
-            case (fileInfo, fileStream ) => {
-              val f_bytestring = fileStream.runWith( Sink.reduce( (a : ByteString, b : ByteString) => a ++ b ) )
-              onSuccess( f_bytestring ) { bytestring =>
-                complete( findSigners( EthHash.hash(bytestring.compact.toArray.toImmutableSeq).bytes ) )
-              }
-            }
-          }
-        },
-        put {
-          entity(as[Array[Byte]]) { bytes =>
-            complete( findSigners( EthHash.hash(bytes).bytes ) )
-          }
-        }
-      )
-    },
-    pathPrefix("find-profile") {
-      path(Segment) { hex =>
-        pathEnd {
-          val signerAddr = EthAddress( hex )
-          val solHash = us.constant.profileHashForSigner( signerAddr )
-          complete( Profile( solHash.widen.hex ) )
-        }
-      }
-    },
-    pathPrefix("metadata") {
-      complete( Metadata( chainId, contractAddress.hex ) )
-    },
-    pathPrefix("assets") {
-      path( RemainingPath ) { path =>
-        getFromResource( s"assets/${path}" )
-      }
     }
-  )
+  }
 
   private def findSigners( bytes : immutable.Seq[Byte] ) = {
     val docHash = sol.Bytes32( bytes )
