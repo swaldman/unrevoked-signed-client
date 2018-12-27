@@ -19,7 +19,10 @@ class HttpProxyDataStore( dataStoreBaseUrl : String ) extends DataStore {
     val dataAsArray = data.toArray
     borrow( mkConn( "data-store/put" ) )( _.disconnect() ) { conn =>
       conn.setRequestMethod( "PUT" )
+      conn.setRequestProperty( "Content-Type", contentType )
+      conn.setDoInput( true )
       conn.setDoOutput( true )
+      conn.setUseCaches( false )
       borrow( conn.getOutputStream() ) { os =>
         os.write( dataAsArray )
       }
