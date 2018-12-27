@@ -16,8 +16,13 @@
     }
     function setDocumentLink( response ) {
       var documentLink = document.getElementById( "documentLink" );
-      documentLink.textContent = "0x" + response.documentHash;
-      documentLink.setAttribute( "href", "/data-store/get/" + response.documentHash );
+      if ( response.signers.length > 0 ) {
+        documentLink.textContent = "0x" + response.documentHash;
+        documentLink.setAttribute( "href", "/data-store/get/" + response.documentHash );
+      }
+      else {
+        documentLink.textContent = "(Unknown Document)"
+      }
     }
     function appendSigner( signersList, signer ) {
       var li = document.createElement("li");
