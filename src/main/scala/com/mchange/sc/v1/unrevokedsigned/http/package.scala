@@ -15,13 +15,14 @@ package object http extends SprayJsonSupport {
   implicit lazy val logger = mlogger( this )
 
   case class Signer( address : String, profileHash : String )
-  case class Signers( signers : List[Signer] )
+  case class DocumentSigners( documentHash : String, signers : List[Signer] )
   case class Profile( profileHash : String )
   case class Metadata( chainId : Int, contractAddress : String )
 
   implicit val SignerJsonFormat = jsonFormat2( Signer )
 
-  implicit val SignersJsonFormat = jsonFormat1( Signers )
+  implicit val SignersJsonFormat = jsonFormat2( DocumentSigners )
+
   implicit val ProfileJsonFormat = jsonFormat1( Profile )
 
   implicit val MetadataJsonFormat = jsonFormat2( Metadata )

@@ -4,10 +4,20 @@
     var theChainId = -1;
     
     function clearSignersList() {
-      var signersList = document.getElementById( "signersList" )
+      var signersList = document.getElementById( "signersList" );
       while (signersList.firstChild) {
         signersList.removeChild(signersList.firstChild);
       }
+    }
+    function clearDocumentLink() {
+      var documentLink = document.getElementById( "documentLink" );
+      documentLink.textContent = "";
+      documentLink.removeAttribute( "href" );
+    }
+    function setDocumentLink( response ) {
+      var documentLink = document.getElementById( "documentLink" );
+      documentLink.textContent = "0x" + response.documentHash;
+      documentLink.setAttribute( "href", "/data-store/get/" + response.documentHash );
     }
     function appendSigner( signersList, signer ) {
       var li = document.createElement("li");
@@ -35,16 +45,18 @@
       signers.forEach( function(s) { appendSigner( signersList, s ); } )
     }
     function updateResults( response ) {
-      appendSigners( response.signers )
+      setDocumentLink( response );
+      appendSigners( response.signers );
     }
     function doUpload( file ) {
       var req = new XMLHttpRequest();
       req.open("PUT", "/find-signers");
-      req.setRequestHeader("Content-type", "application/binary");
+      req.setRequestHeader("Content-type", "application/octet-stream");
       req.onload = function( event ) { updateResults( JSON.parse( event.target.responseText ) ); }
       req.send( file );
     }
     function handleChange() {
+      clearDocumentLink()
       clearSignersList()
       var fileInput = document.getElementById( "chooser" )
       if ( fileInput.files.length > 0 ) {
@@ -89,6 +101,8 @@
     </div>
     <hr />
     <div id="resultsPanel">
+      <h3>Document Link</h3>
+      <a id="documentLink"></a>
       <h3>Signers</h3>
       <ul id="signersList">
       </ul>

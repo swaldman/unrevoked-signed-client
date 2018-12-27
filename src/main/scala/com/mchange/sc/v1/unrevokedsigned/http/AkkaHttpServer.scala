@@ -166,7 +166,7 @@ object AkkaHttpServer {
         .map { case ( signerAddr, valid, profileHash ) => Signer( signerAddr.hex, profileHash.widen.hex ) }
         .toList
     }
-    Signers( signersList )
+    DocumentSigners( docHash.widen.hex, signersList )
   }
 
   def main( argv : Array[String] ) : Unit = {
