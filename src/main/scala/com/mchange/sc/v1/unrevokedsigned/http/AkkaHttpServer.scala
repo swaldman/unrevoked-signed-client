@@ -2,7 +2,7 @@ package com.mchange.sc.v1.unrevokedsigned.http
 
 import com.mchange.sc.v1.consuela._
 
-import com.mchange.sc.v1.unrevokedsigned.DataStore
+import com.mchange.sc.v1.unrevokedsigned.{DataStore,Normalizer}
 
 import com.mchange.sc.v1.log.MLevel._
 
@@ -145,7 +145,8 @@ object AkkaHttpServer {
                   complete {
                     val f_bytestring : Future[ByteString] = fileStream.runWith( Sink.reduce( _ ++ _ ) )
                     f_bytestring.map { bytestring =>
-                      findSigners( EthHash.hash(bytestring.compact.toArray.toImmutableSeq).bytes )
+                      val normalizer = Normalizer.choose( Option( fileInfo.contentType.toString ), Option( fileInfo.fileName ) )
+                      findSigners( EthHash.hash(normalizer(bytestring.compact.toArray)).bytes )
                     }( ec )
                   }
                 }
@@ -155,8 +156,9 @@ object AkkaHttpServer {
               complete {
                 val f_bytestring : Future[ByteString] = ctx.request.entity.dataBytes.runWith( Sink.reduce( _ ++ _ ) )
                 f_bytestring.map { bytestring =>
-                  val data = bytestring.compact.toArray.toImmutableSeq
-                  findSigners( EthHash.hash(data).bytes )
+                  val data = bytestring.compact.toArray
+                  val normalizer = Normalizer.choose( Some( ctx.request.entity.contentType.toString ), None )
+                  findSigners( EthHash.hash(normalizer(data)).bytes )
                 }( ec )
               }
             }

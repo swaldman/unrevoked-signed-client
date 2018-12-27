@@ -56,9 +56,29 @@
     function doUpload( file ) {
       var req = new XMLHttpRequest();
       req.open("PUT", "/find-signers");
-      req.setRequestHeader("Content-type", "application/octet-stream");
+      req.setRequestHeader("Content-type", contentTypeForFile( file ));
       req.onload = function( event ) { updateResults( JSON.parse( event.target.responseText ) ); }
       req.send( file );
+    }
+    function contentTypeForFile( file ) {
+      if ( file.name.toLowerCase().endsWith( ".txt" ) ) {
+        return "text/plain";
+      }
+      else if ( file.name.toLowerCase().endsWith( ".json" ) ) {
+        return "application/json";
+      }
+      else if ( file.name.toLowerCase().endsWith( ".jpeg" ) || file.name.toLowerCase().endsWith( ".jpg" ) ) {
+        return "image/jpeg";
+      }
+      else if ( file.name.toLowerCase().endsWith( ".png" ) ) {
+        return "image/png";
+      }
+      else if ( file.name.toLowerCase().endsWith( ".pdf" ) ) {
+        return "application/pdf";
+      }
+      else {
+        return "application/octet-stream";
+      }
     }
     function handleChange() {
       clearDocumentLink()
